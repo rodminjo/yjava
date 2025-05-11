@@ -1,0 +1,36 @@
+# ========================
+# Java (Gradle)
+# ========================
+**/build/
+**/out/
+**/.gradle/
+**/.idea/
+**/*.iml
+**/*.class
+**/*.jar
+**/*.war
+
+# ========================
+# Rust (Cargo)
+# ========================
+/yffi-jni/target/
+/yffi-jni/Cargo.lock
+**/*.rs.bk
+
+# ========================
+# RustRover / JetBrains
+# ========================
+**/.idea/
+**/*.iml
+**/.rustc_info.json
+**/.rustup/
+**/.cargo/
+
+# ========================
+# OS / Editor files
+# ========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
