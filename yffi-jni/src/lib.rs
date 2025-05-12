@@ -5834,7 +5834,7 @@ pub extern "system" fn Java_com_yjava_bridge_NativeBridge_ydocNew(
     _env: JNIEnv,
     _class: JClass,
 ) -> jlong {
-    ydoc_new() as jlong
+    Box::into_raw(Box::new(Doc::new())) as jlong
 }
 
 
@@ -5844,21 +5844,43 @@ pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ydocWriteTransa
     mut env: JNIEnv,
     _class: JClass,
     doc_ptr: jlong,
-    origin_len: jint,
     origin: jstring,
 ) -> jlong {
     let doc = doc_ptr as *mut Doc;
-    let origin_c_str = if origin_len == 0 {
-        null()
+    let origin = JString::from_raw(origin);
+    assert!(!doc.is_null());
+
+    let doc = doc.as_mut().unwrap();
+    let txn = if origin.is_null() {
+        doc.try_transact_mut()
+            .ok()
+            .map(|txn| Box::into_raw(Box::new(Transaction::read_write(txn))))
+            .unwrap_or(null_mut())
     } else {
-        match to_c_str(&mut env, origin) {
-            Some(cstr) => cstr.as_ptr(),
-            None => return 0,
+        let java_str = match env.get_string(&origin) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        let origin_str = match java_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        if origin_str.is_empty() {
+            doc.try_transact_mut()
+                .ok()
+                .map(|txn| Box::into_raw(Box::new(Transaction::read_write(txn))))
+                .unwrap_or(null_mut())
+        } else {
+            doc.try_transact_mut_with(origin_str.as_bytes())
+                .ok()
+                .map(|txn| Box::into_raw(Box::new(Transaction::read_write(txn))))
+                .unwrap_or(null_mut())
         }
     };
 
-    let txn = ydoc_write_transaction(doc, origin_len as u32, origin_c_str);
-    if txn.is_null() { 0 } else { txn as jlong }
+    if txn == null_mut()  { 0 } else { txn as jlong }
 }
 
 #[no_mangle]
@@ -5868,10 +5890,24 @@ pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ydocReadTransac
     doc_ptr: jlong,
 ) -> jlong {
     let doc = doc_ptr as *mut Doc;
-    let txn_ptr = ydoc_read_transaction(doc);
+    assert!(!doc.is_null());
+
+    let doc = doc.as_mut().unwrap();
+    let txn_ptr = if let Ok(txn) = doc.try_transact() {
+        Box::into_raw(Box::new(Transaction::read_only(txn)))
+    } else {
+        null_mut()
+    };
+
     if txn_ptr == null_mut()  { 0 } else { txn_ptr as jlong }
 }
 
+
+/// Commit and dispose provided read-write transaction. This operation releases allocated resources,
+/// triggers update events and performs a storage compression over all operations executed in scope
+/// of a current transaction.
+/// ytransaction_commit
+/// lib:666
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ytransactionCommit(
     _env: JNIEnv,
@@ -5879,86 +5915,119 @@ pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ytransactionCom
     txn_ptr: jlong,
 ) {
     let txn = txn_ptr as *mut Transaction;
-    ytransaction_commit(txn);
+    assert!(!txn.is_null());
+    drop(Box::from_raw(txn)); // transaction is auto-committed when dropped
 }
 
-
+/// ytransaction_state_vector_v1
+/// lib:790
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ytransactionStateVectorV1(
     env: JNIEnv,
     _class: JClass,
     txn_ptr: jlong,
 ) -> jbyteArray {
-    // 기본 pointer 생성
-    let mut len: u32 = 0;
-    let len_ptr: *mut u32 = &mut len;
+    let txn = txn_ptr as *mut Transaction;
+    assert!(!txn.is_null());
 
-    let txn = txn_ptr as *mut Transaction;  // 포인터를 Transaction로 캐스팅
-
-    // ytransaction_state_vector_v1 함수 호출
-    let vector = ytransaction_state_vector_v1(txn, len_ptr);
-
-    // 반환되는 데이터를 바이트 배열로 변환
-    let slice = std::slice::from_raw_parts(vector as *const u8, len as usize);
+    let txn = txn.as_ref().unwrap();
+    let state_vector = txn.state_vector();
+    let binary = state_vector.encode_v1().into_boxed_slice();
 
     // jbyteArray로 변환하여 반환
-    let array = env.byte_array_from_slice(slice).unwrap().into_raw();
+    let array = env.byte_array_from_slice(binary.as_ref()).unwrap().into_raw();
     
     array
 }
 
-
+/// ytransaction_state_diff_v1
+/// lib.rs:819
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ytransactionStateDiffV1(
     env: JNIEnv,
     _class: JClass,
     txn_ptr: jlong,
     diff_arr: jbyteArray,
-    diff_arr_len: jint,
 ) -> jbyteArray {
-    let vec: Vec<u8> = env.convert_byte_array(JByteArray::from_raw(diff_arr)).unwrap();
-    let diff = vec.as_ptr() as *const c_char;
     let txn = txn_ptr as *mut Transaction;
+    let diff_arr = JByteArray::from_raw(diff_arr);
+    assert!(!txn.is_null());
 
-    let mut len: u32 = 0;
-    let len_ptr: *mut u32 = &mut len;
+    let txn = txn.as_ref().unwrap();
+    let sv = {
+        if diff_arr.is_null() {
+            StateVector::default()
+        } else {
+            let vec = env.convert_byte_array(diff_arr).unwrap();
+            let slice = vec.as_slice();
+            if let Ok(sv) = StateVector::decode_v1(slice) {
+                sv
+            } else {
+                return null_mut();
+            }
+        }
+    };
 
-    let diff = ytransaction_state_diff_v1(txn, diff, diff_arr_len as u32, len_ptr);
-
-    if diff.is_null() {
-        return null_mut(); // Java 측 null
-    }
-
-    let slice = std::slice::from_raw_parts(diff as *const u8, len as usize);
-    let j_result = env.byte_array_from_slice(slice).unwrap();
+    let mut encoder = EncoderV1::new();
+    txn.encode_diff(&sv, &mut encoder);
+    let binary = encoder.to_vec().into_boxed_slice();
+    let j_result = env.byte_array_from_slice(binary.as_ref()).unwrap();
     j_result.into_raw()
 }
 
 
+/// ytransaction_apply
+/// lib.rs:1095
 #[no_mangle]
-pub unsafe extern "C" fn Java_com_yjava_bridge_NativeBridge_ytransactionApply(
+pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ytransactionApply(
     env: JNIEnv,
     _class: JClass,
     txn_ptr: jlong,
     diff_arr: jbyteArray,
-    diff_len: u32,
 ) -> jbyte {
     let txn = txn_ptr as *mut Transaction;
-    let vec: Vec<u8> = env.convert_byte_array(JByteArray::from_raw(diff_arr)).unwrap();
-    let diff = vec.as_ptr() as *const c_char;
-    ytransaction_apply(txn, diff, diff_len) as jbyte
+    let diff_arr = JByteArray::from_raw(diff_arr);
+    assert!(!txn.is_null());
+    assert!(!diff_arr.is_null());
+
+    let vec: Vec<u8> = env.convert_byte_array(diff_arr).unwrap();
+    let diff = vec.as_slice();
+
+    let mut decoder = DecoderV1::from(diff);
+    let byte = match Update::decode(&mut decoder) {
+        Ok(update) => {
+            let txn = txn.as_mut().unwrap();
+            let txn = txn
+                .as_mut()
+                .expect("provided transaction was not writeable");
+            match txn.apply_update(update) {
+                Ok(_) => 0,
+                Err(e) => update_err_code(e),
+            }
+        }
+        Err(e) => err_code(e),
+    };
+
+    byte as jbyte
 }
 
+
+/// lib.rs:354
+/// ydoc_destroy
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ydocDestroy(
     _env: JNIEnv,
     _class: JClass,
-    doc_ptr: jlong) {
-    let doc = doc_ptr as *mut Doc;
-    ydoc_destroy(doc)
+    doc_ptr: jlong
+) {
+    let value = doc_ptr as *mut Doc;
+    if !value.is_null() {
+        drop(Box::from_raw(value));
+    }
 }
 
-
+/// lib.rs:1806
+/// ymap_get_json
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ymapGetJson(
     mut env: JNIEnv,
@@ -5969,24 +6038,35 @@ pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ymapGetJson(
 )-> jstring {
     let map = map_ptr as *const Branch;
     let txn = txn_ptr as *mut Transaction;
-    let key = match to_c_str(&mut env, key_str) {
-        Some(cstr) => cstr.as_ptr(),
-        None => return null_mut(),
-    };
+    let key_str = JString::from_raw(key_str);
 
+    assert!(!map.is_null());
+    assert!(!key_str.is_null());
+    assert!(!txn.is_null());
 
-    let json = ymap_get_json(map, txn, key);
-    let cstr = CStr::from_ptr(json);
-    let json_str = cstr.to_str().unwrap(); // UTF-8 문자열
-    let jstring = env.new_string(json_str).unwrap(); // Java String 변환
+    let txn = txn.as_ref().unwrap();
+    let key_str = env.get_string(&key_str).unwrap();
+    let key = key_str.to_str().unwrap();
 
-    ystring_destroy(json); // 메모리 해제
+    let map = MapRef::from_raw_branch(map);
 
-    jstring.into_raw()
+    if let Some(value) = map.get(txn, key) {
+        let any = value.to_json(txn);
+        match serde_json::to_string(&any) {
+            Ok(json_str) => match env.new_string(json_str) {
+                Ok(jstr) => jstr.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            },
+            Err(_) => std::ptr::null_mut(),
+        }
+    } else {
+        std::ptr::null_mut()
+    }
 }
 
 
-
+/// lib.rs:754
+/// ymap
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ymap(
     mut env: JNIEnv,
@@ -5995,23 +6075,19 @@ pub unsafe extern "system" fn Java_com_yjava_bridge_NativeBridge_ymap(
     name_str: jstring,
 ) -> jlong {
     let doc = doc_ptr as *mut Doc;
-    let name = match to_c_str(&mut env, name_str) {
-        Some(cstr) => cstr.as_ptr(),
-        None => return 0,
-    };
+    let name_str = JString::from_raw(name_str);
 
-    let map = ymap(doc, name);
+    assert!(!doc.is_null());
+    assert!(!name_str.is_null());
+
+    let name_jstr = env.get_string(&name_str).unwrap();
+    let name = name_jstr.to_str().unwrap();
+
+    let map = doc.as_mut()
+        .unwrap()
+        .get_or_insert_map(name)
+        .into_raw_branch();
     if map.is_null() { 0 } else { map as jlong }
-}
-
-unsafe fn to_c_str(env: &mut JNIEnv, jstr: jstring) -> Option<CString> {
-    if jstr.is_null() {
-        return None;
-    }
-    let jstr = JString::from_raw(jstr);
-    let java_str = env.get_string(&jstr).ok()?;
-    let rust_str = java_str.to_str().ok()?;
-    CString::new(rust_str).ok()
 }
 
 /*
