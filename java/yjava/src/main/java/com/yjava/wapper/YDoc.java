@@ -15,8 +15,7 @@ public class YDoc {
   }
 
   public YTransaction getWriteTransaction(String origin) {
-    int originLen = origin != null ? origin.length() : 0;
-    long txnPtr = NativeBridge.getInstance().ydocWriteTransaction(ptr, originLen, origin);
+    long txnPtr = NativeBridge.getInstance().ydocWriteTransaction(ptr, origin);
     return txnPtr != 0L ? new YTransaction(txnPtr) : null;
   }
 

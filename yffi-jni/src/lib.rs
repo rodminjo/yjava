@@ -1,5 +1,5 @@
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jbyte, jbyteArray, jint, jlong, jstring};
+use jni::sys::{jbyte, jbyteArray, jlong, jstring};
 use jni::JNIEnv;
 use std::collections::{Bound, HashMap};
 use std::ffi::{c_char, c_void, CStr, CString};

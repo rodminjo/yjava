@@ -15,11 +15,11 @@ public class YTransaction {
   }
 
   public byte[] getStateDiff(byte[] stateVector) {
-    return NativeBridge.getInstance().ytransactionStateDiffV1(ptr, stateVector, stateVector.length);
+    return NativeBridge.getInstance().ytransactionStateDiffV1(ptr, stateVector);
   }
 
   public byte applyUpdate(byte[] update) {
-    return NativeBridge.getInstance().ytransactionApply(ptr, update, update.length);
+    return NativeBridge.getInstance().ytransactionApply(ptr, update);
   }
 
   public void commit() {
