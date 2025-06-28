@@ -46,6 +46,5 @@ public class Main {
     // 10. 문서 제거
     test.ydocDestroy(docPtr);
 
-    System.out.println("All tests passed!");
   }
 }

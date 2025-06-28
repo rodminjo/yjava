@@ -26,7 +26,6 @@ public class TransactionalYDoc {
   public boolean applyUpdate(byte[] diff) {
     transactionLock.lock(); // 트랜잭션 잠금
     try {
-      System.out.println("diff.length = " + diff.length);
       YTransaction yTransaction = yDoc.getWriteTransaction();
       byte result = yTransaction.applyUpdate(diff);
       yTransaction.commit();
